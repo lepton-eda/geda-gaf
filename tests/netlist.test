@@ -1,0 +1,103 @@
+(use-modules (srfi srfi-64)
+             (srfi srfi-26))
+
+(load-from-path "env.scm")
+
+(define-syntax test-name
+  (lambda (x)
+    (syntax-case x ()
+      ((_ <schematic> <backend>)
+       #'(string-append <schematic> "-" <backend>)))))
+
+(define default-test-directory
+  (build-filename *abs-top-srcdir* "utils" "netlist" "tests"))
+
+(define backend-directory
+  (build-filename *abs-top-srcdir* "utils" "netlist" "scheme" "backend"))
+
+(define default-symbol-directory
+  (build-filename default-test-directory "symcache"))
+
+(define* (test-netlist schematic
+                       backend
+                       #:key
+                       (schematics #f)
+                       (testdir #f)
+                       (golden #f)
+                       (complib #f))
+  (let* ((test-directory (or testdir default-test-directory))
+         (cwd (getcwd))
+         (schematic-filenames (map (cut build-filename test-directory <>)
+                                   (or schematics
+                                       (list schematic))))
+         (base (string-drop-right schematic 4))
+         (golden (or golden (string-append base "-" backend ".out")))
+         (golden-out (build-filename test-directory golden))
+         (test-out (tmpnam)))
+
+    (for-each
+     (lambda (sch)
+       (test-assert (file-exists? sch)))
+     schematic-filenames)
+
+    (test-assert (file-exists? golden-out))
+
+    (when testdir (chdir testdir))
+
+    (test-eq EXIT_SUCCESS
+      (status:exit-val
+       (apply system*
+              *netlister*
+              "-L" backend-directory
+              "-c" (string-append "(component-library \""
+                                  (or complib default-symbol-directory)
+                                  "\")")
+              "-g" backend
+              "-o" test-out
+              schematic-filenames)))
+
+    (when testdir (chdir cwd))
+
+    (test-eq EXIT_SUCCESS
+      (status:exit-val (system* "diff" test-out golden-out)))
+
+    (when (file-exists? test-out) (delete-file test-out))))
+
+
+(define-syntax test-schematic
+  (lambda (stx)
+    (syntax-case stx ()
+      ((_ <schematic> <backend> <args> ...)
+       #'(begin
+           (test-begin (test-name <schematic> <backend>))
+           (test-netlist <schematic> <backend> <args> ...)
+           (test-end (test-name <schematic> <backend>)))))))
+
+(test-begin "netlister")
+
+(test-assert (file-exists? *netlister*))
+(test-eq EXIT_SUCCESS
+  (status:exit-val (system* *netlister* "--help")))
+
+(test-end "netlister")
+
+
+(test-schematic "stack-torture.sch" "geda")
+(test-schematic "stack_1.sch" "geda")
+
+(define switcap-example-dir
+  (build-filename *abs-top-srcdir*
+                  "utils"
+                  "netlist"
+                  "examples"
+                  "switcap"))
+
+(define switcap-example-symbol-dir
+  (build-filename switcap-example-dir "cache"))
+
+(test-schematic "switcap.sch"
+                "switcap"
+                #:schematics '("ckt.sch" "clocks.sch" "analysis.sch")
+                #:testdir switcap-example-dir
+                #:golden "example.scn"
+                #:complib switcap-example-symbol-dir)
